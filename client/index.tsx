@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
+import type { LocaleRuntime, Translate } from '@deepseek-ai/dsh-client-locale/client';
 import type { WorkspaceId, WorkspaceView } from '@deepseek-ai/dsh-api-remotes/client';
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client';
 import type { DirectoryFlowOwnerProps } from '@deepseek-ai/dsh-client-ui-workspace/client';
@@ -20,7 +21,65 @@ import {
 import TYPERT_REMOTE from './typert.remote-client.js';
 
 export const name = 'dsh-ssh-remote-client';
-export const inject = ['remote'];
+export const inject = ['locale', 'remote'];
+
+const ZH = {
+  'Add workspace': '添加工作区',
+  'Close': '关闭',
+  'Choose a local folder or SSH host': '选择本机文件夹或 SSH 主机',
+  'Cancel': '取消',
+  'Open this folder': '打开此文件夹',
+  'Adding...': '正在添加…',
+  'Local': '本机',
+  'Local files': '本机文件',
+  'Host': '主机',
+  'Home': '主目录',
+  'Detecting Windows drives...': '检测 Windows 盘…',
+  'Hidden': '隐藏',
+  'This directory has no child folders.': '此目录没有子文件夹。',
+  'Showing the first 1000 directories.': '仅显示前 1000 个目录。',
+  'New folder name': '新建文件夹名称',
+  'New': '新建',
+  'Use the system folder picker': '使用系统文件夹选择器',
+  'Browse the Host filesystem in the app (including Windows drives under /mnt)': '在应用内浏览 Host 文件系统（含 /mnt 下的 Windows 盘）',
+  'No concrete Host is available in ~/.ssh/config.': '~/.ssh/config 中没有可用的具体 Host。',
+  'SSH connections': 'SSH 连接',
+  'Connections use local OpenSSH; the versioned helper unifies remote files, processes, and PTY.': '连接由本机 OpenSSH 建立；版本化 helper 统一远端文件、进程和 PTY。',
+  'No concrete SSH Host alias found.': '没有发现具体 SSH Host alias。',
+  'Please create this file, add a concrete Host, and refresh.': '请创建该文件并添加具体 Host 后刷新。',
+  'Not handshaken yet': '尚未握手',
+  'Identity configured': '已配置 Identity',
+  'Still have old DSH hosts as SFTP compatibility fallback; migrate them to': '仍有旧 DSH host 仅作为 SFTP 兼容兜底；请迁移到',
+  'Remote workspace validation': '远程工作区验证',
+  'Workspace creation': '工作区创建',
+  'Workspace naming': '工作区命名',
+  'Remote folder creation': '远程文件夹创建',
+  'Local folder creation': '本机文件夹创建',
+  'Disconnected': '未连接',
+  'Installing': '正在安装',
+  'Connecting': '正在连接',
+  'Connected': '已连接',
+  'Connected (limited capabilities)': '已连接（能力受限）',
+  'Reconnecting': '正在重连',
+  'Error': '错误',
+  'Waiting for handshake': '等待握手',
+} as const;
+
+const EN = Object.fromEntries(Object.keys(ZH).map(key => [key, key])) as Record<string, string>;
+
+function registerTranslations(locale: LocaleRuntime): () => void {
+  const unregisterZh = locale.register('ssh-remote', 'zh', ZH as Record<string, string>);
+  const unregisterEn = locale.register('ssh-remote', 'en', EN);
+  return () => {
+    unregisterEn();
+    unregisterZh();
+  };
+}
+
+function usePluginTranslator(locale: LocaleRuntime): Translate {
+  useSyncExternalStore(locale.subscribe.bind(locale), locale.getSnapshot.bind(locale));
+  return locale.bind('ssh-remote');
+}
 
 interface DiscoveredHost {
   alias: string;
@@ -106,12 +165,14 @@ interface DirectoryService {
 }
 
 export async function apply(ctx: ClientContext) {
+  const unregisterTranslations = registerTranslations(ctx.locale);
   const disposeMount = await ctx.remote.$mount(TYPERT_REMOTE);
   const ui = ctx.inject(['remote.sshRemote', 'slots', 'workspaces'], (scope) => {
     const mountUi = (scope: ClientContext, directories: DirectoryService) => {
       const ssh = scope.remote.sshRemote;
       const flowInject = () => ({
         ssh,
+        locale: ctx.locale,
         pickLocal: () => directories.pickDirectory(),
         // The composed picker's browse capability (in-app listing/creation).
         // Served only when the host composes the `-browse` backend; chooseLocal
@@ -134,7 +195,7 @@ export async function apply(ctx: ClientContext) {
                 id: 'ssh-remote',
                 order: 20,
                 label: () => 'SSH Remote',
-                inject: () => ({ ssh }),
+                inject: () => ({ ssh, locale: ctx.locale }),
               },
               SshRemotePanel,
             );
@@ -184,6 +245,7 @@ export async function apply(ctx: ClientContext) {
   return async () => {
     await ui.dispose();
     await disposeMount();
+    unregisterTranslations();
   };
 }
 
@@ -192,6 +254,7 @@ type BrowseTarget = { kind: 'local' } | { kind: 'ssh'; alias: string };
 
 type SshDirectoryFlowProps = DirectoryFlowOwnerProps & {
   ssh: SshRemote;
+  locale: LocaleRuntime;
   pickLocal: () => Promise<string | null>;
   /** One local directory level via the composed picker's browse capability. */
   listLocal: (path?: string) => Promise<RemoteDirectoryListing>;
@@ -241,12 +304,14 @@ function SshDirectoryFlow({
   onCancel,
   onError,
   ssh,
+  locale,
   pickLocal,
   listLocal,
   createLocalDirectory,
   createWorkspace,
   renameWorkspace,
 }: SshDirectoryFlowProps) {
+  const t = usePluginTranslator(locale);
   const [config, setConfig] = useState<SshConfig | null>(null);
   const [target, setTarget] = useState<BrowseTarget | null>(null);
   const [listing, setListing] = useState<RemoteDirectoryListing | null>(null);
@@ -433,7 +498,7 @@ function SshDirectoryFlow({
     try {
       const result = await withMutationDeadline(
         ssh.materializeWorkspace(target.alias, listing.path),
-        '远程工作区验证',
+        t('Remote workspace validation'),
       );
       if (navigationEpoch.current !== epoch) return;
       if (result.ok) {
@@ -443,13 +508,13 @@ function SshDirectoryFlow({
         // close/select/error lifecycle without exposing the anchor hash.
         const workspace = await withMutationDeadline(
           createWorkspace({ path: result.value.anchorPath }),
-          '工作区创建',
+            t('Workspace creation'),
         );
         if (navigationEpoch.current !== epoch) return;
         if (workspace.title !== result.value.title) {
           await withMutationDeadline(
             renameWorkspace(workspace.workspaceId, result.value.title),
-            '工作区命名',
+            t('Workspace naming'),
           );
           if (navigationEpoch.current !== epoch) return;
         }
@@ -479,11 +544,11 @@ function SshDirectoryFlow({
       const created = targetSnapshot.kind === 'ssh'
         ? await withMutationDeadline(
           ssh.createDirectory(targetSnapshot.alias, listingPath, folderName),
-          '远程文件夹创建',
+          t('Remote folder creation'),
         )
         : await asResult(() => withMutationDeadline(
           createLocalDirectory(listingPath, folderName),
-          '本机文件夹创建',
+          t('Local folder creation'),
         ));
       if (navigationEpoch.current !== epoch) return;
       if (created.ok) {
@@ -519,15 +584,15 @@ function SshDirectoryFlow({
       // plugins ship no stylesheet, so one scoped rule widens the card for
       // the browse layout.
       className="dsh-ssh-remote-flow"
-      title={!target ? '添加工作区' : target.kind === 'local' ? '本机文件' : `SSH · ${target.alias}`}
-      closeLabel="关闭"
-      description={listing ? listing.path : '选择本机文件夹或 SSH 主机'}
+      title={!target ? t('Add workspace') : target.kind === 'local' ? t('Local files') : `SSH · ${target.alias}`}
+      closeLabel={t('Close')}
+      description={listing ? listing.path : t('Choose a local folder or SSH host')}
       footer={
         <>
-          <Button variant="ghost" disabled={busy || mutating} onClick={cancel}>取消</Button>
+          <Button variant="ghost" disabled={busy || mutating} onClick={cancel}>{t('Cancel')}</Button>
           {target && listing && (
             <Button variant="primary" disabled={disabled} onClick={() => void commit()}>
-              {busy ? '正在添加…' : '打开此文件夹'}
+              {busy ? t('Adding...') : t('Open this folder')}
             </Button>
           )}
         </>
@@ -543,11 +608,11 @@ function SshDirectoryFlow({
               onClick={() => void chooseLocal()}
               style={sourceRowStyle}
             >
-              <strong>本机</strong>
+              <strong>{t('Local')}</strong>
               <span style={subtleText}>
                 {localCanBrowse === false
-                  ? '使用系统文件夹选择器'
-                  : '在应用内浏览 Host 文件系统（含 /mnt 下的 Windows 盘）'}
+                  ? t('Use the system folder picker')
+                  : t('Browse the Host filesystem in the app (including Windows drives under /mnt)')}
               </span>
             </Button>
             <div style={hostListStyle}>
@@ -564,14 +629,14 @@ function SshDirectoryFlow({
                     {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
                   </span>
                   <span style={dimmedText}>
-                    Helper · {helperStateLabel(host.helper.status)}
+                    Helper · {helperStateLabel(host.helper.status, t)}
                     {host.helper.version ? ` · ${host.helper.version}` : ''}
                   </span>
                   {host.helper.error && <span style={{ ...dimmedText, color: 'var(--dsw-alias-label-error)' }}>{host.helper.error}</span>}
                 </Button>
               ))}
               {!loading && config?.hosts.length === 0 && (
-                <div style={subtleText}>~/.ssh/config 中没有可用的具体 Host。</div>
+                <div style={subtleText}>{t('No concrete Host is available in ~/.ssh/config.')}</div>
               )}
             </div>
           </div>
@@ -579,7 +644,7 @@ function SshDirectoryFlow({
           <>
             <div style={chipRowStyle}>
               <Pill disabled={disabled} onClick={() => { setTarget(null); setListing(null); }}>
-                {target.kind === 'local' ? '本机' : '主机'}
+                {target.kind === 'local' ? t('Local') : t('Host')}
               </Pill>
               {listing.crumbs.map((crumb) => (
                 <Pill key={crumb.path} disabled={disabled} onClick={() => navigate(crumb.path)}>
@@ -589,13 +654,13 @@ function SshDirectoryFlow({
             </div>
             {target.kind === 'local' && (
               <div style={chipRowStyle}>
-                <Pill disabled={disabled} onClick={() => navigate(listing.home)}>主目录</Pill>
+                <Pill disabled={disabled} onClick={() => navigate(listing.home)}>{t('Home')}</Pill>
                 {(driveAnchors ?? []).map((anchor) => (
                   <Pill key={anchor.path} disabled={disabled} onClick={() => navigate(anchor.path)}>
                     {anchor.label}
                   </Pill>
                 ))}
-                {driveAnchors === null && <span style={subtleText}>检测 Windows 盘…</span>}
+                {driveAnchors === null && <span style={subtleText}>{t('Detecting Windows drives...')}</span>}
               </div>
             )}
             <div style={entryListStyle}>
@@ -610,14 +675,14 @@ function SshDirectoryFlow({
                   style={entryRowStyle}
                 >
                   <span>{entry.name}</span>
-                  {entry.hidden && <span style={{ marginLeft: 'auto', ...dimmedText }}>隐藏</span>}
+                  {entry.hidden && <span style={{ marginLeft: 'auto', ...dimmedText }}>{t('Hidden')}</span>}
                 </Button>
               ))}
               {!loading && listing.entries.length === 0 && (
-                <div style={{ padding: 16, ...dimmedText }}>此目录没有子文件夹。</div>
+                <div style={{ padding: 16, ...dimmedText }}>{t('This directory has no child folders.')}</div>
               )}
             </div>
-            {listing.truncated && <div style={{ fontSize: 12, ...dimmedText }}>仅显示前 1000 个目录。</div>}
+            {listing.truncated && <div style={{ fontSize: 12, ...dimmedText }}>{t('Showing the first 1000 directories.')}</div>}
             <div style={{ display: 'flex', gap: 8 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <Input
@@ -627,7 +692,7 @@ function SshDirectoryFlow({
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') void createFolder();
                   }}
-                  placeholder="新建文件夹名称"
+                  placeholder={t('New folder name')}
                 />
               </div>
               <Button
@@ -636,7 +701,7 @@ function SshDirectoryFlow({
                 disabled={disabled || !newFolder.trim()}
                 onClick={() => void createFolder()}
               >
-                新建
+                {t('New')}
               </Button>
             </div>
           </>
@@ -690,26 +755,27 @@ const entryRowStyle: CSSProperties = { justifyContent: 'flex-start', flexShrink:
 const subtleText: CSSProperties = { color: 'var(--dsw-alias-label-secondary)', fontSize: 12 };
 const dimmedText: CSSProperties = { color: 'var(--dsw-alias-label-dimmed)', fontSize: 11 };
 
-function helperStateLabel(state: HelperHostStatus['status']): string {
+function helperStateLabel(state: HelperHostStatus['status'], t: Translate): string {
   return ({
-    disconnected: '未连接',
-    installing: '正在安装',
-    connecting: '正在连接',
-    connected: '已连接',
-    degraded: '已连接（能力受限）',
-    reconnecting: '正在重连',
-    error: '错误',
+    disconnected: t('Disconnected'),
+    installing: t('Installing'),
+    connecting: t('Connecting'),
+    connected: t('Connected'),
+    degraded: t('Connected (limited capabilities)'),
+    reconnecting: t('Reconnecting'),
+    error: t('Error'),
   } as const)[state];
 }
 
-function helperCapabilitySummary(capabilities: Record<string, unknown>): string {
+function helperCapabilitySummary(capabilities: Record<string, unknown>, t: Translate): string {
   const names = Object.entries(capabilities)
     .filter(([, value]) => value !== false && value !== null)
     .map(([name]) => name);
-  return names.length === 0 ? '等待握手' : names.join(' · ');
+  return names.length === 0 ? t('Waiting for handshake') : names.join(' · ');
 }
 
-function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
+function SshRemotePanel({ ssh, locale }: { ssh: SshRemote; locale: LocaleRuntime }) {
+  const t = usePluginTranslator(locale);
   const [config, setConfig] = useState<SshConfig | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -787,13 +853,13 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: 12, maxWidth: 760 }}>
       <div style={{ display: 'flex', gap: 12, alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h3 style={{ margin: 0 }}>SSH Connections</h3>
+          <h3 style={{ margin: 0 }}>{t('SSH connections')}</h3>
           <div style={{ marginTop: 4, color: 'var(--dsw-alias-label-secondary)', fontSize: 12 }}>
-            连接由本机 OpenSSH 建立；版本化 helper 统一远端文件、进程和 PTY。显式断开会停止该 helper session 管理的远端进程。
+            {t('Connections use local OpenSSH; the versioned helper unifies remote files, processes, and PTY.')} 
           </div>
         </div>
         <Button variant="outline" size="sm" disabled={loading || Boolean(busyAlias)} onClick={() => void load()}>
-          {loading ? '刷新中…' : '刷新'}
+          {loading ? t('Refreshing...') : t('Refresh')}
         </Button>
       </div>
 
@@ -801,11 +867,11 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
         <div style={{ padding: 10, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
           <div style={subtleText}>SSH config</div>
           <code style={{ fontSize: 12 }}>{config.configPath}</code>
-          {!config.configExists && <div style={{ marginTop: 6, ...subtleText }}>请创建该文件并添加具体 Host 后刷新。</div>}
+          {!config.configExists && <div style={{ marginTop: 6, ...subtleText }}>{t('Please create this file, add a concrete Host, and refresh.')}</div>}
         </div>
       )}
 
-      {config?.hosts.length === 0 && config.configExists && <div style={subtleText}>没有发现具体 SSH Host alias。</div>}
+      {config?.hosts.length === 0 && config.configExists && <div style={subtleText}>{t('No concrete SSH Host alias found.')}</div>}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {config?.hosts.map((host) => {
@@ -816,35 +882,35 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                 <div style={{ fontWeight: 600 }}>{host.alias}</div>
                 <span style={{ ...dimmedText, color: host.helper.status === 'error' ? 'var(--dsw-alias-label-error)' : undefined }}>
-                  {helperStateLabel(host.helper.status)}
+                  {helperStateLabel(host.helper.status, t)}
                 </span>
               </div>
               <div style={{ ...subtleText, overflowWrap: 'anywhere' }}>
                 {host.user ? `${host.user}@` : ''}{host.host}:{host.port}
               </div>
               <div style={{ marginTop: 6, ...dimmedText }}>
-                Helper {host.helper.version || '尚未握手'} · {helperCapabilitySummary(host.helper.capabilities)}
+                Helper {host.helper.version || t('Not handshaken yet')} · {helperCapabilitySummary(host.helper.capabilities, t)}
               </div>
               {host.helper.error && <div style={{ marginTop: 6, color: 'var(--dsw-alias-label-error)', fontSize: 12 }}>{host.helper.error}</div>}
               {(host.proxyJump || host.proxyCommand || host.identityFile) && (
                 <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {host.proxyJump && <Pill>ProxyJump: {host.proxyJump}</Pill>}
                   {host.proxyCommand && <Pill>ProxyCommand</Pill>}
-                  {host.identityFile && <Pill>Identity configured</Pill>}
+                  {host.identityFile && <Pill>{t('Identity configured')}</Pill>}
                 </div>
               )}
               <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {connected ? (
                   <Button size="sm" variant="outline" disabled={busy} onClick={() => void runHostAction(host.alias, 'disconnect')}>
-                    {busy ? '处理中…' : '断开'}
+                    {busy ? t('Working...') : t('Disconnect')}
                   </Button>
                 ) : (
                   <Button size="sm" variant="primary" disabled={busy} onClick={() => void runHostAction(host.alias, 'connect')}>
-                    {busy ? '处理中…' : '连接'}
+                    {busy ? t('Working...') : t('Connect')}
                   </Button>
                 )}
-                <Button size="sm" variant="outline" disabled={busy} onClick={() => void runHostAction(host.alias, 'retry')}>重试</Button>
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void runHostAction(host.alias, 'diagnostics')}>诊断</Button>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => void runHostAction(host.alias, 'retry')}>{t('Retry')}</Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void runHostAction(host.alias, 'diagnostics')}>{t('Diagnostics')}</Button>
               </div>
             </div>
           );
@@ -854,8 +920,8 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
       {details && (
         <div style={{ padding: 12, border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 8 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-            <strong>{details.alias} · 诊断</strong>
-            <Button size="sm" variant="ghost" onClick={() => setDetails(null)}>关闭</Button>
+            <strong>{details.alias} · {t('Diagnostics')}</strong>
+            <Button size="sm" variant="ghost" onClick={() => setDetails(null)}>{t('Close diagnostics')}</Button>
           </div>
           <pre style={{ margin: '8px 0 0', maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 11 }}>
             {JSON.stringify(details, null, 2)}
@@ -865,7 +931,7 @@ function SshRemotePanel({ ssh }: { ssh: SshRemote }) {
 
       {config && config.legacyHostCount > 0 && (
         <div style={subtleText}>
-          仍有 {config.legacyHostCount} 个旧 DSH host 仅作为 SFTP 兼容兜底；请迁移到 <code>{config.configPath}</code>。
+          {t('Still have old DSH hosts as SFTP compatibility fallback; migrate them to')} <code>{config.configPath}</code>。
         </div>
       )}
       {error && <div role="alert" style={{ color: 'var(--dsw-alias-label-error)' }}>{error}</div>}

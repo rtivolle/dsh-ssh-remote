@@ -73,6 +73,12 @@ describe('client lifecycle', () => {
       return fiber;
     });
     const ctx = {
+      locale: {
+        register: vi.fn(() => vi.fn()),
+        bind: vi.fn(() => (key: string) => key),
+        subscribe: vi.fn(() => vi.fn()),
+        getSnapshot: vi.fn(() => ({ active: 'en', locales: [], revision: 0 })),
+      },
       remote: {
         $mount: vi.fn(async () => {
           events.push('remote:mount');
